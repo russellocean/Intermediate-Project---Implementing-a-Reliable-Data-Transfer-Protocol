@@ -1,7 +1,4 @@
-from struct import pack
-
-# We're importing the struct module below so we have access to the struct.error exception. We also import pack and
-# unpack above using from... import... for the convenience of writing pack() instead of struct.pack()
+from struct import error, pack, unpack
 
 MAX_UNSIGNED_INT = 4294967295
 
@@ -208,7 +205,24 @@ class GBNHost:
         Returns:
             int: the checksum value
         """
-        return 0
+        # Ensure packet length is even by padding with a 0-byte if necessary
+        if len(packet) % 2 == 1:
+            packet += bytes(1)
+
+        # Initialize sum
+        checksum_sum = 0
+
+        # Process each 16-bit segment of the packet
+        for i in range(0, len(packet), 2):
+            # Combine two bytes to form a 16-bit word
+            word = (packet[i] << 8) + packet[i + 1]
+            checksum_sum += word
+            checksum_sum = (checksum_sum & 0xFFFF) + (checksum_sum >> 16)
+
+        # Perform 1's complement
+        checksum = ~checksum_sum & 0xFFFF
+
+        return checksum
 
     def unpack_pkt(self, packet):
         """Create a dictionary containing the contents of a given packet
@@ -234,7 +248,34 @@ class GBNHost:
         Returns:
             dictionary: a dictionary containing the different values stored in the packet
         """
-        pass
+
+        try:
+            # Unpack the first 8 bytes to get packet_type, seq_num, and checksum
+            packet_type, seq_num, checksum = unpack("!HHI", packet[:8])
+            # Check if the packet is corrupted using the is_corrupt function
+            if self.is_corrupt(packet):
+                raise ValueError("Packet is corrupted")
+
+            # Initialize the dictionary with known values
+            unpacked_data = {
+                "packet_type": packet_type,
+                "seq_num": seq_num,
+                "checksum": checksum,
+            }
+            # Check if there's more data for payload_length and payload
+            if len(packet) > 8:
+                # Attempt to unpack payload_length
+                payload_length = unpack("!I", packet[8:12])[0]
+                # Add payload_length to the dictionary
+                unpacked_data["payload_length"] = payload_length
+                # Extract payload using the payload_length
+                payload = packet[12 : 12 + payload_length]
+                # Add payload to the dictionary if it exists
+                unpacked_data["payload"] = payload
+            return unpacked_data
+        except error as e:
+            # If an error occurs, it's likely due to a corrupted packet
+            raise ValueError("Packet is corrupted") from e
 
     # This function should check to determine if a given packet is corrupt. The packet parameter accepted
     # by this function should contain a bytes object
@@ -248,4 +289,22 @@ class GBNHost:
         Returns:
             bool: whether or not the packet data has been corrupted
         """
-        pass
+        # Unpack the packet to extract the packet type, checksum, sequence number, and payload (if applicable)
+        try:
+            # Assuming the packet format: packet type (2 bytes), checksum (2 bytes), sequence number (4 bytes),
+            # followed by optional payload length (4 bytes) and payload.
+            # Adjust the unpacking format string as per your packet structure.
+            packet_type, included_checksum, seq_num = unpack("!HHI", packet[:8])
+            payload = packet[8:] if len(packet) > 8 else b""
+
+            # Recreate the packet without the included checksum (substitute with 0) for checksum calculation
+            packet_without_checksum = pack("!HHI", packet_type, 0, seq_num) + payload
+
+            # Recalculate the checksum for the packet without the included checksum
+            recalculated_checksum = self.create_checksum(packet_without_checksum)
+
+            # Compare the included checksum with the recalculated checksum
+            return included_checksum != recalculated_checksum
+        except error:
+            # If unpacking fails due to a corrupted packet structure, consider the packet corrupt
+            return True
