@@ -165,19 +165,12 @@ class GBNHost:
         Returns:
             None
         """
-        packets_to_resend = False
         for seq_num in range(self.window_base, self.next_seq_num):
             packet = self.unacked_buffer[seq_num % self.window_size]
             if packet:  # Ensure the packet exists before attempting to resend
+                self.simulator.start_timer(self.entity, self.timer_interval)
                 self.simulator.pass_to_network_layer(self.entity, packet)
                 print(f"Resending packet {seq_num}")
-                packets_to_resend = True
-
-        if packets_to_resend:
-            # Only restart the timer if there are packets to resend
-            self.simulator.start_timer(self.entity, self.timer_interval)
-        else:
-            print("No packets to resend")
 
     def create_data_pkt(self, seq_num, payload):
         """Create a data packet with a given sequence number and variable length payload
