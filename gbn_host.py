@@ -199,42 +199,7 @@ class GBNHost:
         Returns:
             bytes: a bytes object containing the required fields for a data packet
         """
-        # Define packet type for data packets
-        packet_type = 0x0
-
-        # Calculate payload length
-        payload_length = len(payload)
-
-        # Pack the packet without a checksum first
-        packet_format = "!HIHI{}s".format(
-            payload_length
-        )  # Format string without placeholder for checksum
-        packet_without_checksum = pack(
-            packet_format,
-            packet_type,
-            seq_num,
-            0,  # Placeholder for checksum, actual value to be calculated later
-            payload_length,
-            payload.encode(),
-        )
-
-        # Calculate checksum
-        checksum = self.create_checksum(packet_without_checksum)
-
-        # Repack the packet with the correct checksum
-        packet_format_with_checksum = "!HIHI{}s".format(
-            payload_length
-        )  # Adjust format string to include checksum
-        packet_with_correct_checksum = pack(
-            packet_format_with_checksum,
-            packet_type,
-            seq_num,
-            checksum,  # Correct checksum
-            payload_length,
-            payload.encode(),
-        )
-
-        return packet_with_correct_checksum
+        return self.create_packet(0x0, seq_num, payload)
 
     def create_ack_pkt(self, seq_num):
         """Create an acknowledgment packet with a given sequence number
@@ -254,30 +219,40 @@ class GBNHost:
         Returns:
             bytes: a bytes object containing the required fields for a data packet
         """
-        # Define packet type for acknowledgment packets
-        packet_type = 0x1
+        return self.create_packet(0x1, seq_num)
 
-        # Initial packet packing without checksum
-        packet_format = "!HIH"  # Format string including placeholder for checksum
-        packet_without_checksum = pack(
-            packet_format,
-            packet_type,
-            seq_num,
-            0,  # Placeholder for checksum, actual value to be calculated later
+    def pack_packet(
+        self, packet_type, seq_num, checksum, payload_length=0, payload=b""
+    ):
+        if (
+            payload_length
+        ):  # If there's a payload, include length and payload in the packing
+            packet_format = f"!HIHI{payload_length}s"
+            packed_packet = pack(
+                packet_format, packet_type, seq_num, checksum, payload_length, payload
+            )
+        else:  # For packets without a payload, exclude payload_length and payload
+            packet_format = "!HIH"
+            packed_packet = pack(packet_format, packet_type, seq_num, checksum)
+        return packed_packet
+
+    def create_packet(self, packet_type, seq_num, payload=""):
+        # Encode the payload and calculate its length
+        payload_encoded = payload.encode() if payload else b""
+        payload_length = len(payload_encoded)
+
+        # Pack the packet without a checksum to calculate the checksum
+        packet_without_checksum = self.pack_packet(
+            packet_type, seq_num, 0, payload_length, payload_encoded
         )
 
-        # Checksum calculation
+        # Calculate the checksum based on the packet without its actual checksum
         checksum = self.create_checksum(packet_without_checksum)
 
         # Repack the packet with the correct checksum
-        packet_with_correct_checksum = pack(
-            packet_format,
-            packet_type,
-            seq_num,
-            checksum,  # Correct checksum
+        return self.pack_packet(
+            packet_type, seq_num, checksum, payload_length, payload_encoded
         )
-
-        return packet_with_correct_checksum
 
     # This function should accept a bytes object and return a checksum for the bytes object.
     def create_checksum(self, packet):
@@ -336,33 +311,51 @@ class GBNHost:
             dictionary: a dictionary containing the different values stored in the packet
         """
         try:
-            # Extract the packet type and checksum from the beginning of the packet
+            # The packet layout is HIHI{payload_length}s. For ACK packets its only HIH.
+            # H is for unsigned short (2 bytes), I is for unsigned int (4 bytes), and s is for string (variable bytes)
+
+            # Check minimum length for type and sequence number and checksum
+            if len(packet) < 6:
+                print("Packet is too short for type, sequence number, and checksum")
+                return None  # Not enough data for any packet
+
+            # Unpack common header parts
             packet_type, seq_num, checksum = unpack("!HIH", packet[:8])
 
-            # Initialize the dictionary with known values
             unpacked_data = {
                 "packet_type": packet_type,
                 "seq_num": seq_num,
                 "checksum": checksum,
             }
 
-            # For ACK packets, only packet_type and checksum are needed
-            if packet_type == 0x1:  # ACK packet
+            # For ACK packets, this is all we need
+            if packet_type == 0x1:
+                print("ACK packet")
                 return unpacked_data
 
-            # For data packets, additional fields are extracted
-            payload_length = unpack("!I", packet[8:12])[0]
+            # Ensure there's enough remaining packet for payload_length
+            if len(packet) < 12:
+                print("Packet is too short for payload length")
+                return None  # Not enough data for a data packet
 
-            # If there's payload data, extract it
-            if payload_length > 0:
-                payload_format = f"!{payload_length}s"
-                payload = unpack(payload_format, packet[12 : 12 + payload_length])[0]
-                unpacked_data["payload_length"] = payload_length
-                unpacked_data["payload"] = payload
+            # Extract payload_length for data packets
+            (payload_length,) = unpack("!I", packet[8:12])
+            if len(packet) < 12 + payload_length:
+                print("Packet is too short for its claimed payload length")
+                print(f"Packet length: {len(packet)}, payload length: {payload_length}")
+                # Packet is too short for its claimed payload length
+                return None
+
+            # Extract the payload, if any
+            payload_format = f"!{payload_length}s"
+            (payload,) = unpack(payload_format, packet[12 : 12 + payload_length])
+            unpacked_data["payload_length"] = payload_length
+            unpacked_data["payload"] = payload
 
             return unpacked_data
-        except error:
-            # If an error occurs, it's likely due to a corrupted packet
+        except error as e:
+            # Log or handle the specific struct.error if needed
+            print(f"Error unpacking packet: {e}")
             return None
 
     def is_corrupt(self, packet):
