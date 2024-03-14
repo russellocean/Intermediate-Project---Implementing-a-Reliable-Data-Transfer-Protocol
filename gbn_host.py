@@ -1,3 +1,5 @@
+# from network_simulator import NetworkSimulator, EventEntity
+# from enum import Enum
 from struct import error, pack, unpack
 
 MAX_UNSIGNED_INT = 4294967295
@@ -58,7 +60,26 @@ class GBNHost:
         Returns:
             nothing
         """
-        pass
+        # Check if the window is not full
+        if self.next_seq_num < self.window_base + self.window_size:
+            # Create a packet with the current sequence number and payload
+            packet = self.create_data_pkt(self.next_seq_num, payload)
+
+            print(f"\nSending data packet with seq_num: {self.next_seq_num}")
+            print(f"Packet: {packet}\n")
+
+            # Add the packet to the unacknowledged buffer
+            self.unacked_buffer[self.next_seq_num % self.window_size] = packet
+            # Pass the packet to the network layer
+            self.simulator.pass_to_network_layer(self.entity, packet)
+            # If this is the first packet in the window, start the timer
+            if self.next_seq_num == self.window_base:
+                self.simulator.start_timer(self.entity, self.timer_interval)
+            # Increment the next sequence number
+            self.next_seq_num += 1
+        else:
+            # If the window is full, buffer the application data
+            self.app_layer_buffer.append(payload)
 
     def receive_from_network_layer(self, packet):
         """Implements the functionality required to receive packets received from simulated applications via the
@@ -67,11 +88,6 @@ class GBNHost:
         This function will be called by the NetworkSimualtor when simulated packets are ready to be received from
         the network. It should implement all RECEIVING functionality from the GBN Sender and GBN Receiver FSMs.
         Refer to both FSMs for implementation details.
-
-        Note that this is a more complex function to implement than receive_from_application_layer as it will
-        involve handling received data packets and acknowledgment packets separately. The logic for handling
-        received data packets is detailed in the GBN Receiver FSM and the logic for handling received acknowledgment
-        packets is detailed in the GBN Sender FSM.
 
         You'll need to call self.simulator.pass_to_application_layer() and self.simulator.pass_to_network_layer(),
         in this function. Make sure you pass self.entity as the first argument when calling any of these functions.
@@ -86,7 +102,46 @@ class GBNHost:
         Returns:
             nothing
         """
-        pass
+        # Unpack the received packet
+        unpacked_packet = self.unpack_pkt(packet)
+        if unpacked_packet is None:
+            # Packet is corrupted
+            print("Received corrupted packet.")
+            return
+
+        packet_type = unpacked_packet["packet_type"]
+        seq_num = unpacked_packet["seq_num"]
+
+        if packet_type == 0x0:  # Data packet
+            print(f"Received data packet with seq_num: {seq_num}")
+            if seq_num == self.expected_seq_num:
+                # Pass the data to the application layer
+                self.simulator.pass_to_application_layer(
+                    self.entity, unpacked_packet["payload"]
+                )
+                # Send ACK for the received packet
+                ack_packet = self.create_ack_pkt(seq_num)
+                self.simulator.pass_to_network_layer(self.entity, ack_packet)
+                # Update expected sequence number
+                self.expected_seq_num += 1
+            else:
+                # Resend last ACK packet if out of order packet is received
+                print(
+                    f"Out of order packet. Expected: {self.expected_seq_num}, but got: {seq_num}"
+                )
+                self.simulator.pass_to_network_layer(self.entity, self.last_ack_pkt)
+
+        elif packet_type == 0x1:  # ACK packet
+            print(f"Received ACK for seq_num: {seq_num}")
+            if seq_num >= self.window_base and seq_num != MAX_UNSIGNED_INT:
+                # Move window base to the next expected ACK
+                self.window_base = seq_num + 1
+                # Stop timer if all packets are acknowledged
+                if self.window_base == self.next_seq_num:
+                    self.simulator.stop_timer(self.entity)
+                else:
+                    # Restart timer for the next packet
+                    self.simulator.start_timer(self.entity, self.timer_interval)
 
     def timer_interrupt(self):
         """Implements the functionality that handles when a timeout occurs for the oldest unacknowledged packet
@@ -103,7 +158,24 @@ class GBNHost:
         Returns:
             None
         """
-        pass
+        # Log the timer interrupt occurrence
+        print("Timer interrupt: checking for packets to retransmit.")
+        # Check if there are any unacknowledged packets in the window
+        if self.window_base != self.next_seq_num:
+            # Log which packets are being retransmitted
+            print(
+                f"Timer interrupt: retransmitting packets starting from seq_num: {self.window_base}"
+            )
+            # Resend all packets in the window that have not been acknowledged
+            for i in range(self.window_base, self.next_seq_num):
+                packet_index = i % self.window_size
+                packet = self.unacked_buffer[packet_index]
+                if packet:  # Ensure the packet exists before attempting to resend
+                    self.simulator.pass_to_network_layer(self.entity, packet)
+            # Restart the timer for the oldest unacknowledged packet
+            self.simulator.start_timer(self.entity, self.timer_interval)
+        else:
+            print("No unacknowledged packets to resend in timer_interrupt")
 
     def create_data_pkt(self, seq_num, payload):
         """Create a data packet with a given sequence number and variable length payload
@@ -152,6 +224,9 @@ class GBNHost:
             "!HHIIs", packet_type, checksum, seq_num, payload_length, payload.encode()
         )
 
+        print("---------------- Creating Data Packet ----------------")
+        print("Packed Data Packet: ", packet_with_checksum)
+
         return packet_with_checksum
 
     def create_ack_pkt(self, seq_num):
@@ -172,7 +247,7 @@ class GBNHost:
         Returns:
             bytes: a bytes object containing the required fields for a data packet
         """
-        # Define packet type for ACK packets
+        # Define packet type for acknowledgment packets
         packet_type = 0x1
 
         # Initial checksum value set to 0
@@ -180,7 +255,10 @@ class GBNHost:
 
         # Pack the packet with a placeholder for checksum
         packet_without_checksum = pack(
-            "!HHI", packet_type, checksum_placeholder, seq_num
+            "!HHI",
+            packet_type,
+            checksum_placeholder,
+            seq_num,
         )
 
         # Calculate checksum
@@ -188,6 +266,11 @@ class GBNHost:
 
         # Repack the packet with the correct checksum
         packet_with_checksum = pack("!HHI", packet_type, checksum, seq_num)
+
+        # Print as much information as possible for debugging
+        print("---------------- Creating ACK packet ----------------")
+        print(f"Created ACK packet with seq_num: {seq_num}, checksum: {checksum}")
+        print(f"Packet: {packet_with_checksum}")
 
         return packet_with_checksum
 
@@ -222,6 +305,11 @@ class GBNHost:
         # Perform 1's complement
         checksum = ~checksum_sum & 0xFFFF
 
+        # Print as much information as possible for debugging
+        print("---------------- Creating Checksum ----------------")
+        print(f"Created checksum: {checksum}")
+        print(f"Packet: {packet}")
+
         return checksum
 
     def unpack_pkt(self, packet):
@@ -250,8 +338,10 @@ class GBNHost:
         """
 
         try:
-            # Unpack the first 8 bytes to get packet_type, seq_num, and checksum
-            packet_type, seq_num, checksum = unpack("!HHI", packet[:8])
+            print("Unpacking packet: ", packet)
+
+            # Unpack the first 8 bytes to get packet_type, checksum, and seq_num
+            packet_type, checksum, seq_num = unpack("!HHI", packet[:8])
             # Check if the packet is corrupted using the is_corrupt function
             if self.is_corrupt(packet):
                 raise ValueError("Packet is corrupted")
@@ -272,10 +362,14 @@ class GBNHost:
                 payload = packet[12 : 12 + payload_length]
                 # Add payload to the dictionary if it exists
                 unpacked_data["payload"] = payload
+
+            print("---------------- Unpacking Packet ----------------")
+            print(f"Unpacked packet: {unpacked_data}\n")
+
             return unpacked_data
-        except error as e:
+        except error:
             # If an error occurs, it's likely due to a corrupted packet
-            raise ValueError("Packet is corrupted") from e
+            return None
 
     # This function should check to determine if a given packet is corrupt. The packet parameter accepted
     # by this function should contain a bytes object
@@ -289,22 +383,19 @@ class GBNHost:
         Returns:
             bool: whether or not the packet data has been corrupted
         """
-        # Unpack the packet to extract the packet type, checksum, sequence number, and payload (if applicable)
-        try:
-            # Assuming the packet format: packet type (2 bytes), checksum (2 bytes), sequence number (4 bytes),
-            # followed by optional payload length (4 bytes) and payload.
-            # Adjust the unpacking format string as per your packet structure.
-            packet_type, included_checksum, seq_num = unpack("!HHI", packet[:8])
-            payload = packet[8:] if len(packet) > 8 else b""
+        # Extract packet without checksum for recalculating
+        packet_type, _, seq_num = unpack("!HHI", packet[:8])
+        payload = packet[8:] if len(packet) > 8 else b""
 
-            # Recreate the packet without the included checksum (substitute with 0) for checksum calculation
-            packet_without_checksum = pack("!HHI", packet_type, 0, seq_num) + payload
+        # Placeholder for checksum during calculation
+        checksum_placeholder = 0
+        packet_without_checksum = (
+            pack("!HHI", packet_type, checksum_placeholder, seq_num) + payload
+        )
 
-            # Recalculate the checksum for the packet without the included checksum
-            recalculated_checksum = self.create_checksum(packet_without_checksum)
+        # Recalculate checksum
+        recalculated_checksum = self.create_checksum(packet_without_checksum)
 
-            # Compare the included checksum with the recalculated checksum
-            return included_checksum != recalculated_checksum
-        except error:
-            # If unpacking fails due to a corrupted packet structure, consider the packet corrupt
-            return True
+        # Compare recalculated checksum with the original
+        original_checksum = unpack("!H", packet[2:4])[0]
+        return recalculated_checksum != original_checksum
