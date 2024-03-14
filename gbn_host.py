@@ -254,7 +254,8 @@ class GBNHost:
         Returns:
             bytes: a bytes object containing the required fields for a data packet
         """
-        packet_type = 0x1  # Define packet type for acknowledgment packets
+        # Define packet type for acknowledgment packets
+        packet_type = 0x1
 
         # Initial packet packing without checksum
         packet_format = "!HIH"  # Format string including placeholder for checksum
@@ -365,31 +366,77 @@ class GBNHost:
             return None
 
     def is_corrupt(self, packet):
-        """Determine whether a packet has been corrupted based on the included checksum
+        """Determine whether a packet has been corrupted based on the included checksum and handle payload length corruption.
 
         This function should use the included Internet checksum to determine whether this packet has been corrupted.
+        It also handles cases where the payload length might be corrupted, leading to exceptions when unpacking.
 
         Args:
             packet (bytes): a bytes object containing a packet's data
         Returns:
             bool: whether or not the packet data has been corrupted
         """
+        try:
+            # Attempt to unpack the packet type, sequence number, and checksum
+            packet_type, seq_num, original_checksum = unpack("!HIH", packet[:8])
 
-        # Correctly reconstruct packet without checksum for validation
-        packet_type, seq_num, original_checksum = unpack("!HIH", packet[:8])
-        payload = packet[8:]
-        packet_without_checksum = pack(
-            "!HIH{}s".format(len(payload)),
-            packet_type,
-            seq_num,
-            0,
-            payload,
-        )
+            # If the packet is an ACK, it has no payload length or payload, so only the checksum is checked
+            if packet_type == 0x1:
+                packet_without_checksum = pack(
+                    "!HIH",
+                    packet_type,
+                    seq_num,
+                    0,
+                )
+                recalculated_checksum = self.create_checksum(packet_without_checksum)
 
-        # Recalculate checksum
-        recalculated_checksum = self.create_checksum(packet_without_checksum)
+                is_corrupt = recalculated_checksum != original_checksum
 
-        print(f"Packet is corrupt: {recalculated_checksum != original_checksum}")
+            else:
+                # Attempt to unpack the payload length, if it fails, the packet is corrupt
+                payload_length = unpack("!I", packet[8:12])[0]
+                payload = packet[
+                    12 : 12 + payload_length
+                ]  # This might raise an exception if payload_length is corrupted
 
-        # Compare recalculated checksum with the original
-        return recalculated_checksum != original_checksum
+                # Reconstruct packet without checksum for validation
+                packet_without_checksum = pack(
+                    "!HIHI{}s".format(len(payload)),
+                    packet_type,
+                    seq_num,
+                    0,
+                    payload_length,
+                    payload,
+                )
+
+                # Recalculate checksum
+                recalculated_checksum = self.create_checksum(packet_without_checksum)
+
+                # Compare recalculated checksum with the original
+                is_corrupt = recalculated_checksum != original_checksum
+
+        except error as e:
+            # If an exception is caught, it's likely due to a corrupted packet length
+            print(f"Exception caught indicating potential corruption: {str(e)}")
+            is_corrupt = True
+
+        print(f"Packet is corrupt: {is_corrupt}")
+        return is_corrupt
+
+    def get_packet_type(self, packet):
+        """Determine if a packet is an ACK or a data packet.
+
+        Args:
+            packet (bytes): The packet to determine the type of.
+        Returns:
+            str: 'ACK' if the packet is an acknowledgment packet, 'DATA' if it is a data packet.
+        """
+        try:
+            packet_type, _, _ = unpack("!HIH", packet[:8])
+            if packet_type == 0x1:
+                return "ACK"
+            else:
+                return "DATA"
+        except error:
+            print("Error determining packet type.")
+            return None
