@@ -60,26 +60,8 @@ class GBNHost:
         Returns:
             nothing
         """
-        if len(self.app_layer_buffer) < self.window_size:
-            self.app_layer_buffer.append(payload)
-
-        while (
-            self.next_seq_num < self.window_base + self.window_size
-            and self.app_layer_buffer
-        ):
-            pkt_payload = self.app_layer_buffer.pop(0)
-            pkt = self.create_data_pkt(self.next_seq_num, pkt_payload)
-            self.unacked_buffer[self.next_seq_num % self.window_size] = pkt
-
-            print(
-                f"Sending packet {self.next_seq_num} with checksum {self.unpack_pkt(pkt)['checksum']} to network layer. Window base: {self.window_base}, next_seq_num: {self.next_seq_num}. Payload: {pkt_payload}"
-            )
-            self.simulator.pass_to_network_layer(self.entity, pkt)
-            # If the window base is equal to the next sequence number, then we need to start the timer. This is because the window base is the oldest unacknowledged packet, and if the window base is equal to the next sequence number, then there are no unacknowledged packets, so we need to start the timer for the next packet.
-            if self.window_base == self.next_seq_num:
-                print(f"Starting timer for packet {self.next_seq_num}")
-                self.simulator.start_timer(self.entity, self.timer_interval)
-            self.next_seq_num += 1
+        self.app_layer_buffer.append(payload)
+        self.process_app_layer_buffer()
 
     def receive_from_network_layer(self, packet):
         """Implements the functionality required to receive packets received from simulated applications via the
@@ -162,8 +144,14 @@ class GBNHost:
             len(self.app_layer_buffer) > 0
             and self.next_seq_num < self.window_base + self.window_size
         ):
-            payload = self.app_layer_buffer.pop(0)
-            self.receive_from_application_layer(payload)
+            pkt_payload = self.app_layer_buffer.pop(0)
+            pkt = self.create_data_pkt(self.next_seq_num, pkt_payload)
+            self.unacked_buffer[self.next_seq_num % self.window_size] = pkt
+
+            self.simulator.pass_to_network_layer(self.entity, pkt)
+            if self.window_base == self.next_seq_num:
+                self.simulator.start_timer(self.entity, self.timer_interval)
+            self.next_seq_num += 1
 
     def timer_interrupt(self):
         """Implements the functionality that handles when a timeout occurs for the oldest unacknowledged packet
