@@ -113,16 +113,13 @@ class GBNHost:
 
         # Handle ACK packets
         if is_ack:
-            # Check if the packet is not corrupted and not the default ACK packet
             if not self.is_corrupt(packet) and seq_num != MAX_UNSIGNED_INT:
-                # Check if the ACK is within the window
-                if seq_num >= self.window_base and seq_num < self.next_seq_num:
-                    # Slide the window and manage the timer
+                if self.window_base <= seq_num < self.next_seq_num:
                     self.window_base = seq_num + 1
-                    self.simulator.stop_timer(self.entity)
-                    if self.window_base != self.next_seq_num:
+                    if self.window_base == self.next_seq_num:
+                        self.simulator.stop_timer(self.entity)
+                    else:
                         self.simulator.start_timer(self.entity, self.timer_interval)
-                    # Process any buffered application layer data if the window has space
                     self.process_app_layer_buffer()
 
         # Handle data packets
@@ -169,11 +166,11 @@ class GBNHost:
             None
         """
         packets_to_resend = False
-        for a in range(self.window_base, self.next_seq_num):
-            packet = self.unacked_buffer[a % self.window_size]
+        for seq_num in range(self.window_base, self.next_seq_num):
+            packet = self.unacked_buffer[seq_num % self.window_size]
             if packet:  # Ensure the packet exists before attempting to resend
                 self.simulator.pass_to_network_layer(self.entity, packet)
-                print(f"Resending packet {a}")
+                print(f"Resending packet {seq_num}")
                 packets_to_resend = True
 
         if packets_to_resend:
