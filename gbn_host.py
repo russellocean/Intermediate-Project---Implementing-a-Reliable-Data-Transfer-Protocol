@@ -103,6 +103,13 @@ class GBNHost:
 
         print("Received packet: ", packet)
 
+        if self.is_corrupt(packet):
+            print(
+                f"Received corrupt packet: {packet}. Sending last ACK {self.last_ack_pkt} to network layer."
+            )
+            self.simulator.pass_to_network_layer(self.entity, self.last_ack_pkt)
+            return
+
         # Unpack the packet and extract if it is an ACK or data packet
         packet_type, seq_num, checksum = unpack("!HIH", packet[:8])
 
@@ -128,15 +135,26 @@ class GBNHost:
                     data = self.unpack_pkt(packet)["payload"].decode()
                 except Exception:
                     # If unpacking fails, treat as a corrupt packet
+                    print("Failed to unpack packet, treating as corrupt.")
+                    print(
+                        f"Sending packet {self.expected_seq_num} with checksum {self.unpack_pkt(packet)['checksum']} to network layer."
+                    )
                     self.simulator.pass_to_network_layer(self.entity, self.last_ack_pkt)
                 else:
+                    print(f"Sending packet with payload {data} to application layer.")
                     # Pass the data to the application layer and send an ACK
                     self.simulator.pass_to_application_layer(self.entity, data)
                     self.last_ack_pkt = self.create_ack_pkt(self.expected_seq_num)
+
+                    print(
+                        f"Sending ACK {self.expected_seq_num} with checksum {self.unpack_pkt(self.last_ack_pkt)['checksum']} to network layer."
+                    )
                     self.simulator.pass_to_network_layer(self.entity, self.last_ack_pkt)
                     self.expected_seq_num += 1
+                    print(f"Expected sequence number: {self.expected_seq_num}")
             else:
                 # If the packet is not expected or is corrupt, resend the last ACK
+                print
                 self.simulator.pass_to_network_layer(self.entity, self.last_ack_pkt)
 
     def process_app_layer_buffer(self):
@@ -311,7 +329,6 @@ class GBNHost:
 
             # For ACK packets, this is all we need
             if packet_type == 0x1:
-                print("ACK packet")
                 return unpacked_data
 
             # Ensure there's enough remaining packet for payload_length
@@ -394,5 +411,4 @@ class GBNHost:
             print(f"Exception caught indicating potential corruption: {str(e)}")
             is_corrupt = True
 
-        print(f"Packet is corrupt: {is_corrupt}")
         return is_corrupt
