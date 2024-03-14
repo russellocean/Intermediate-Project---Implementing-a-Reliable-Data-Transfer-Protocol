@@ -281,24 +281,14 @@ class GBNHost:
         Returns:
             int: the checksum value
         """
-        # Ensure packet length is even by padding with a 0-byte if necessary
-        if len(packet) % 2 == 1:
-            packet += bytes(1)
-
-        # Initialize sum
-        checksum_sum = 0
-
-        # Process each 16-bit segment of the packet
+        sum = 0
         for i in range(0, len(packet), 2):
-            # Combine two bytes to form a 16-bit word
-            word = (packet[i] << 8) + packet[i + 1]
-            checksum_sum += word
-            checksum_sum = (checksum_sum & 0xFFFF) + (checksum_sum >> 16)
-
-        # Perform 1's complement
-        checksum = ~checksum_sum & 0xFFFF
-
-        return checksum
+            if i + 1 < len(packet):
+                sum += (packet[i] << 8) + packet[i + 1]
+            else:
+                sum += packet[i] << 8
+            sum = (sum & 0xFFFF) + (sum >> 16)
+        return ~sum & 0xFFFF
 
     def unpack_pkt(self, packet):
         """Create a dictionary containing the contents of a given packet
