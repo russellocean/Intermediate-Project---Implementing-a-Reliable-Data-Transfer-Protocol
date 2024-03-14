@@ -108,41 +108,50 @@ class GBNHost:
         # Unpack the packet and extract if it is an ACK or data packet
         packet_type, seq_num, checksum = unpack("!HIH", packet[:8])
 
+        # Determine if the packet is an ACK or a data packet
         is_ack = packet_type == 0x1
 
-        if is_ack and not self.is_corrupt(packet):
-            if seq_num >= self.window_base:
-                self.window_base = seq_num + 1
-                self.simulator.stop_timer(self.entity)
-                if self.window_base != self.next_seq_num:
-                    self.simulator.start_timer(self.entity, self.timer_interval)
-                while (
-                    len(self.app_layer_buffer) > 0
-                    and self.next_seq_num < self.window_base + self.window_size
-                ):
-                    payload = self.app_layer_buffer.pop(0)
-                    packet_to_send = self.create_data_pkt(self.next_seq_num, payload)
-                    self.unacked_buffer[self.next_seq_num % self.window_size] = (
-                        packet_to_send
-                    )
-                    self.simulator.pass_to_network_layer(self.entity, packet_to_send)
-                    if self.window_base == self.next_seq_num:
+        # Handle ACK packets
+        if is_ack:
+            # Check if the packet is not corrupted and not the default ACK packet
+            if not self.is_corrupt(packet) and seq_num != MAX_UNSIGNED_INT:
+                # Check if the ACK is within the window
+                if seq_num >= self.window_base and seq_num < self.next_seq_num:
+                    # Slide the window and manage the timer
+                    self.window_base = seq_num + 1
+                    self.simulator.stop_timer(self.entity)
+                    if self.window_base != self.next_seq_num:
                         self.simulator.start_timer(self.entity, self.timer_interval)
-                    self.next_seq_num += 1
-        elif self.is_corrupt(packet):
-            self.simulator.pass_to_network_layer(self.entity, self.last_ack_pkt)
-        elif seq_num != self.expected_seq_num:
-            self.simulator.pass_to_network_layer(self.entity, self.last_ack_pkt)
+                    # Process any buffered application layer data if the window has space
+                    self.process_app_layer_buffer()
+
+        # Handle data packets
         else:
-            try:
-                data = self.unpack_pkt(packet)["payload"].decode()
-            except Exception:
-                self.simulator.pass_to_network_layer(self.entity, self.last_ack_pkt)
+            if not self.is_corrupt(packet) and seq_num == self.expected_seq_num:
+                # Process the packet
+                try:
+                    data = self.unpack_pkt(packet)["payload"].decode()
+                except Exception:
+                    # If unpacking fails, treat as a corrupt packet
+                    self.simulator.pass_to_network_layer(self.entity, self.last_ack_pkt)
+                else:
+                    # Pass the data to the application layer and send an ACK
+                    self.simulator.pass_to_application_layer(self.entity, data)
+                    self.last_ack_pkt = self.create_ack_pkt(self.expected_seq_num)
+                    self.simulator.pass_to_network_layer(self.entity, self.last_ack_pkt)
+                    self.expected_seq_num += 1
             else:
-                self.simulator.pass_to_application_layer(self.entity, data)
-                self.last_ack_pkt = self.create_ack_pkt(self.expected_seq_num)
+                # If the packet is not expected or is corrupt, resend the last ACK
                 self.simulator.pass_to_network_layer(self.entity, self.last_ack_pkt)
-                self.expected_seq_num += 1
+
+    def process_app_layer_buffer(self):
+        """Processes buffered application layer data if the window has space."""
+        while (
+            len(self.app_layer_buffer) > 0
+            and self.next_seq_num < self.window_base + self.window_size
+        ):
+            payload = self.app_layer_buffer.pop(0)
+            self.receive_from_application_layer(payload)
 
     def timer_interrupt(self):
         """Implements the functionality that handles when a timeout occurs for the oldest unacknowledged packet
@@ -159,14 +168,19 @@ class GBNHost:
         Returns:
             None
         """
-        # Restart the timer for the oldest unacknowledged packet
-        self.simulator.start_timer(self.entity, self.timer_interval)
-        # Resend all packets in the window that have not been acknowledged
-        for a in range(self.window_base, self.next_seq_num, 1):
+        packets_to_resend = False
+        for a in range(self.window_base, self.next_seq_num):
             packet = self.unacked_buffer[a % self.window_size]
             if packet:  # Ensure the packet exists before attempting to resend
                 self.simulator.pass_to_network_layer(self.entity, packet)
                 print(f"Resending packet {a}")
+                packets_to_resend = True
+
+        if packets_to_resend:
+            # Only restart the timer if there are packets to resend
+            self.simulator.start_timer(self.entity, self.timer_interval)
+        else:
+            print("No packets to resend")
 
     def create_data_pkt(self, seq_num, payload):
         """Create a data packet with a given sequence number and variable length payload
