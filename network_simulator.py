@@ -147,6 +147,9 @@ class NetworkSimulator:
 
                 # This is a timer interrupt event
                 elif cur_event.evtype == EventType.TIMER_INTERRUPT:
+                    print(
+                        f"Timer interrupt for packet {self.time} at {cur_event.eventity.name}"
+                    )
                     self.print_entity_message(
                         cur_event.eventity, "Timer Interrupt", None
                     )
@@ -419,6 +422,7 @@ class NetworkSimulator:
                 )
                 return
 
+        print(f"Starting timer for {entity.name} at time {self.time}")
         self.print_entity_message(entity, "Starting Timer", None)
         self.print_to_log(entity, entity, "Starting Timer", None)
 
@@ -432,6 +436,7 @@ class NetworkSimulator:
         for idx, e in enumerate(self.event_list):
             if e.eventity == entity:
                 if e.evtype == EventType.TIMER_INTERRUPT:
+                    print(f"Stopping timer for {entity.name} at time {self.time}")
                     self.event_list.pop(
                         idx
                     )  # Remove the first timer event associated with this entity
