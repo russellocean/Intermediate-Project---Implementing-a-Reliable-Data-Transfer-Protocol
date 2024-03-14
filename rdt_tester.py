@@ -347,8 +347,8 @@ class RDTTester:
 if __name__ == "__main__":
 
     tests = {
-        "Test1_SlowDataRate_0Loss_0Corruption": 13,
-        # "Test2_SlowDataRate_25Loss_0Corruption": 6.5,
+        # "Test1_SlowDataRate_0Loss_0Corruption": 13,
+        "Test2_SlowDataRate_25Loss_0Corruption": 6.5,
         # "Test3_SlowDataRate_0Loss_25Corruption": 6.5,
         # "Test4_SlowDataRate_25Loss_25Corruption": 6.5,
         # "Test5_MediumDataRate_0Loss_0Corruption": 4.0625,

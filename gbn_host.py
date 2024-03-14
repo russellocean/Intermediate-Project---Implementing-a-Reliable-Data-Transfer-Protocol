@@ -65,9 +65,6 @@ class GBNHost:
             # Create a packet with the current sequence number and payload
             packet = self.create_data_pkt(self.next_seq_num, payload)
 
-            print(f"\nSending data packet with seq_num: {self.next_seq_num}")
-            print(f"Packet: {packet}\n")
-
             # Add the packet to the unacknowledged buffer
             self.unacked_buffer[self.next_seq_num % self.window_size] = packet
             # Pass the packet to the network layer
@@ -104,20 +101,15 @@ class GBNHost:
         """
         # Unpack the received packet
         unpacked_packet = self.unpack_pkt(packet)
-        if unpacked_packet is None:
-            # Packet is corrupted
-            print("Received corrupted packet.")
-            return
 
         packet_type = unpacked_packet["packet_type"]
         seq_num = unpacked_packet["seq_num"]
 
         if packet_type == 0x0:  # Data packet
-            print(f"Received data packet with seq_num: {seq_num}")
             if seq_num == self.expected_seq_num:
                 # Pass the data to the application layer
                 self.simulator.pass_to_application_layer(
-                    self.entity, unpacked_packet["payload"]
+                    self.entity, unpacked_packet["payload"].decode()
                 )
                 # Send ACK for the received packet
                 ack_packet = self.create_ack_pkt(seq_num)
@@ -126,13 +118,9 @@ class GBNHost:
                 self.expected_seq_num += 1
             else:
                 # Resend last ACK packet if out of order packet is received
-                print(
-                    f"Out of order packet. Expected: {self.expected_seq_num}, but got: {seq_num}"
-                )
                 self.simulator.pass_to_network_layer(self.entity, self.last_ack_pkt)
 
         elif packet_type == 0x1:  # ACK packet
-            print(f"Received ACK for seq_num: {seq_num}")
             if seq_num >= self.window_base and seq_num != MAX_UNSIGNED_INT:
                 # Move window base to the next expected ACK
                 self.window_base = seq_num + 1
@@ -158,14 +146,8 @@ class GBNHost:
         Returns:
             None
         """
-        # Log the timer interrupt occurrence
-        print("Timer interrupt: checking for packets to retransmit.")
         # Check if there are any unacknowledged packets in the window
         if self.window_base != self.next_seq_num:
-            # Log which packets are being retransmitted
-            print(
-                f"Timer interrupt: retransmitting packets starting from seq_num: {self.window_base}"
-            )
             # Resend all packets in the window that have not been acknowledged
             for i in range(self.window_base, self.next_seq_num):
                 packet_index = i % self.window_size
@@ -181,11 +163,11 @@ class GBNHost:
         """Create a data packet with a given sequence number and variable length payload
 
         Data packets contain the following fields:
-            packet_type (unsigned half): this should always be 0x0 for data packets
-            seq_num (unsigned int): this should contain the sequence number for this packet
-            checksum (unsigned half): this should contain the checksum for this packet
-            payload_length (unsigned int): this should contain the length of the payload
-            payload (varchar string): the payload contains a variable length string
+            packet_type (unsigned half): this should always be 0x0 for data packets (2 bytes)
+            seq_num (unsigned int): this should contain the sequence number for this packet (4 bytes)
+            checksum (unsigned half): this should contain the checksum for this packet (2 bytes)
+            payload_length (unsigned int): this should contain the length of the payload (4 bytes)
+            payload (varchar string): the payload contains a variable length string (variable bytes)
 
         Note: generating a checksum requires a bytes object containing all of the packet's data except for the checksum
               itself. It is recommended to first pack the entire packet with a placeholder value for the checksum
@@ -200,18 +182,18 @@ class GBNHost:
         # Define packet type for data packets
         packet_type = 0x0
 
-        # Initial checksum value set to 0
-        checksum_placeholder = 0
-
         # Calculate payload length
         payload_length = len(payload)
 
-        # Pack the packet with a placeholder for checksum
+        # Pack the packet without a checksum first
+        packet_format = "!HIHI{}s".format(
+            payload_length
+        )  # Format string without placeholder for checksum
         packet_without_checksum = pack(
-            "!HHIIs",
+            packet_format,
             packet_type,
-            checksum_placeholder,
             seq_num,
+            0,  # Placeholder for checksum, actual value to be calculated later
             payload_length,
             payload.encode(),
         )
@@ -220,14 +202,19 @@ class GBNHost:
         checksum = self.create_checksum(packet_without_checksum)
 
         # Repack the packet with the correct checksum
-        packet_with_checksum = pack(
-            "!HHIIs", packet_type, checksum, seq_num, payload_length, payload.encode()
+        packet_format_with_checksum = "!HIHI{}s".format(
+            payload_length
+        )  # Adjust format string to include checksum
+        packet_with_correct_checksum = pack(
+            packet_format_with_checksum,
+            packet_type,
+            seq_num,
+            checksum,  # Correct checksum
+            payload_length,
+            payload.encode(),
         )
 
-        print("---------------- Creating Data Packet ----------------")
-        print("Packed Data Packet: ", packet_with_checksum)
-
-        return packet_with_checksum
+        return packet_with_correct_checksum
 
     def create_ack_pkt(self, seq_num):
         """Create an acknowledgment packet with a given sequence number
@@ -247,32 +234,29 @@ class GBNHost:
         Returns:
             bytes: a bytes object containing the required fields for a data packet
         """
-        # Define packet type for acknowledgment packets
-        packet_type = 0x1
+        packet_type = 0x1  # Define packet type for acknowledgment packets
 
-        # Initial checksum value set to 0
-        checksum_placeholder = 0
-
-        # Pack the packet with a placeholder for checksum
+        # Initial packet packing without checksum
+        packet_format = "!HIH"  # Format string including placeholder for checksum
         packet_without_checksum = pack(
-            "!HHI",
+            packet_format,
             packet_type,
-            checksum_placeholder,
             seq_num,
+            0,  # Placeholder for checksum, actual value to be calculated later
         )
 
-        # Calculate checksum
+        # Checksum calculation
         checksum = self.create_checksum(packet_without_checksum)
 
         # Repack the packet with the correct checksum
-        packet_with_checksum = pack("!HHI", packet_type, checksum, seq_num)
+        packet_with_correct_checksum = pack(
+            packet_format,
+            packet_type,
+            seq_num,
+            checksum,  # Correct checksum
+        )
 
-        # Print as much information as possible for debugging
-        print("---------------- Creating ACK packet ----------------")
-        print(f"Created ACK packet with seq_num: {seq_num}, checksum: {checksum}")
-        print(f"Packet: {packet_with_checksum}")
-
-        return packet_with_checksum
+        return packet_with_correct_checksum
 
     # This function should accept a bytes object and return a checksum for the bytes object.
     def create_checksum(self, packet):
@@ -305,11 +289,6 @@ class GBNHost:
         # Perform 1's complement
         checksum = ~checksum_sum & 0xFFFF
 
-        # Print as much information as possible for debugging
-        print("---------------- Creating Checksum ----------------")
-        print(f"Created checksum: {checksum}")
-        print(f"Packet: {packet}")
-
         return checksum
 
     def unpack_pkt(self, packet):
@@ -336,15 +315,9 @@ class GBNHost:
         Returns:
             dictionary: a dictionary containing the different values stored in the packet
         """
-
         try:
-            print("Unpacking packet: ", packet)
-
-            # Unpack the first 8 bytes to get packet_type, checksum, and seq_num
-            packet_type, checksum, seq_num = unpack("!HHI", packet[:8])
-            # Check if the packet is corrupted using the is_corrupt function
-            if self.is_corrupt(packet):
-                raise ValueError("Packet is corrupted")
+            # Extract the packet type and checksum from the beginning of the packet
+            packet_type, seq_num, checksum = unpack("!HIH", packet[:8])
 
             # Initialize the dictionary with known values
             unpacked_data = {
@@ -352,27 +325,33 @@ class GBNHost:
                 "seq_num": seq_num,
                 "checksum": checksum,
             }
-            # Check if there's more data for payload_length and payload
-            if len(packet) > 8:
-                # Attempt to unpack payload_length
-                payload_length = unpack("!I", packet[8:12])[0]
-                # Add payload_length to the dictionary
-                unpacked_data["payload_length"] = payload_length
-                # Extract payload using the payload_length
-                payload = packet[12 : 12 + payload_length]
-                # Add payload to the dictionary if it exists
-                unpacked_data["payload"] = payload
 
-            print("---------------- Unpacking Packet ----------------")
-            print(f"Unpacked packet: {unpacked_data}\n")
+            # For ACK packets, only packet_type and checksum are needed
+            if packet_type == 0x1:  # ACK packet
+                # Verify if the ACK packet is corrupted using the is_corrupt function
+                if self.is_corrupt(packet):
+                    raise ValueError("ACK Packet is corrupted")
+                return unpacked_data
+
+            # For data packets, additional fields are extracted
+            payload_length = unpack("!I", packet[8:12])[0]
+
+            # Verify if the data packet is corrupted using the is_corrupt function
+            if self.is_corrupt(packet):
+                raise ValueError("Data Packet is corrupted")
+
+            # If there's payload data, extract it
+            if payload_length > 0:
+                payload_format = f"!{payload_length}s"
+                payload = unpack(payload_format, packet[12 : 12 + payload_length])[0]
+                unpacked_data["payload_length"] = payload_length
+                unpacked_data["payload"] = payload
 
             return unpacked_data
         except error:
             # If an error occurs, it's likely due to a corrupted packet
             return None
 
-    # This function should check to determine if a given packet is corrupt. The packet parameter accepted
-    # by this function should contain a bytes object
     def is_corrupt(self, packet):
         """Determine whether a packet has been corrupted based on the included checksum
 
@@ -383,19 +362,19 @@ class GBNHost:
         Returns:
             bool: whether or not the packet data has been corrupted
         """
-        # Extract packet without checksum for recalculating
-        packet_type, _, seq_num = unpack("!HHI", packet[:8])
-        payload = packet[8:] if len(packet) > 8 else b""
-
-        # Placeholder for checksum during calculation
-        checksum_placeholder = 0
-        packet_without_checksum = (
-            pack("!HHI", packet_type, checksum_placeholder, seq_num) + payload
+        # Correctly reconstruct packet without checksum for validation
+        packet_type, seq_num, original_checksum = unpack("!HIH", packet[:8])
+        payload = packet[8:]
+        packet_without_checksum = pack(
+            "!HIH{}s".format(len(payload)),
+            packet_type,
+            seq_num,
+            0,
+            payload,
         )
 
         # Recalculate checksum
         recalculated_checksum = self.create_checksum(packet_without_checksum)
 
         # Compare recalculated checksum with the original
-        original_checksum = unpack("!H", packet[2:4])[0]
         return recalculated_checksum != original_checksum
