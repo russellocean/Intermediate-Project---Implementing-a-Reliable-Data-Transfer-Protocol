@@ -60,26 +60,24 @@ class GBNHost:
         Returns:
             nothing
         """
-        # Check if the window is not full
-        if self.next_seq_num < self.window_base + self.window_size:
-            # Create a packet with the current sequence number and payload
-            packet = self.create_data_pkt(self.next_seq_num, payload)
+        if len(self.app_layer_buffer) < self.window_size:
+            self.app_layer_buffer.append(payload)
 
-            # Append the packet to the unacknowledged buffer
-            self.unacked_buffer[self.next_seq_num % self.window_size] = packet
-            # Pass the packet to the network layer
-            self.simulator.pass_to_network_layer(
-                self.entity,
-                packet,
+        while (
+            self.next_seq_num < self.window_base + self.window_size
+            and self.app_layer_buffer
+        ):
+            pkt_payload = self.app_layer_buffer.pop(0)
+            pkt = self.create_data_pkt(self.next_seq_num, pkt_payload)
+            self.unacked_buffer[self.next_seq_num % self.window_size] = pkt
+
+            print(
+                f"Sending packet {self.next_seq_num} with checksum {self.unpack_pkt(pkt)['checksum']} to network layer. Window base: {self.window_base}, next_seq_num: {self.next_seq_num}. Payload: {pkt_payload}"
             )
-            # If this is the first packet in the window, start the timer
+            self.simulator.pass_to_network_layer(self.entity, pkt)
             if self.window_base == self.next_seq_num:
                 self.simulator.start_timer(self.entity, self.timer_interval)
-            # Increment the next sequence number
             self.next_seq_num += 1
-        else:
-            # If the window is full, buffer the application data
-            self.app_layer_buffer.append(payload)
 
     def receive_from_network_layer(self, packet):
         """Implements the functionality required to receive packets received from simulated applications via the
@@ -165,12 +163,14 @@ class GBNHost:
         Returns:
             None
         """
-        for seq_num in range(self.window_base, self.next_seq_num):
-            packet = self.unacked_buffer[seq_num % self.window_size]
-            if packet:  # Ensure the packet exists before attempting to resend
-                self.simulator.start_timer(self.entity, self.timer_interval)
-                self.simulator.pass_to_network_layer(self.entity, packet)
-                print(f"Resending packet {seq_num}")
+        self.simulator.start_timer(self.entity, self.timer_interval)
+        for i in range(self.window_base, self.next_seq_num):
+            print(f"Resending packet {i % self.window_size}")
+            if self.unacked_buffer[i % self.window_size]:
+                print(f"Resending packet {i % self.window_size}")
+                self.simulator.pass_to_network_layer(
+                    self.entity, self.unacked_buffer[i % self.window_size]
+                )
 
     def create_data_pkt(self, seq_num, payload):
         """Create a data packet with a given sequence number and variable length payload
@@ -192,7 +192,27 @@ class GBNHost:
         Returns:
             bytes: a bytes object containing the required fields for a data packet
         """
-        return self.create_packet(0x0, seq_num, payload)
+        packet_type = 0x0
+        payload_length = len(payload)
+        checksum = 0
+        # Packet format before checksum: packet_type, seq_num, checksum (placeholder), payload_length, payload
+        pkt_without_checksum = pack(
+            "!HIHI{}s".format(payload_length),
+            packet_type,
+            seq_num,
+            checksum,
+            payload_length,
+            payload.encode(),
+        )
+        checksum = self.create_checksum(pkt_without_checksum)
+        return pack(
+            "!HIHI{}s".format(payload_length),
+            packet_type,
+            seq_num,
+            checksum,
+            payload_length,
+            payload.encode(),
+        )
 
     def create_ack_pkt(self, seq_num):
         """Create an acknowledgment packet with a given sequence number
@@ -212,40 +232,12 @@ class GBNHost:
         Returns:
             bytes: a bytes object containing the required fields for a data packet
         """
-        return self.create_packet(0x1, seq_num)
-
-    def pack_packet(
-        self, packet_type, seq_num, checksum, payload_length=0, payload=b""
-    ):
-        if (
-            payload_length
-        ):  # If there's a payload, include length and payload in the packing
-            packet_format = f"!HIHI{payload_length}s"
-            packed_packet = pack(
-                packet_format, packet_type, seq_num, checksum, payload_length, payload
-            )
-        else:  # For packets without a payload, exclude payload_length and payload
-            packet_format = "!HIH"
-            packed_packet = pack(packet_format, packet_type, seq_num, checksum)
-        return packed_packet
-
-    def create_packet(self, packet_type, seq_num, payload=""):
-        # Encode the payload and calculate its length
-        payload_encoded = payload.encode() if payload else b""
-        payload_length = len(payload_encoded)
-
-        # Pack the packet without a checksum to calculate the checksum
-        packet_without_checksum = self.pack_packet(
-            packet_type, seq_num, 0, payload_length, payload_encoded
-        )
-
-        # Calculate the checksum based on the packet without its actual checksum
-        checksum = self.create_checksum(packet_without_checksum)
-
-        # Repack the packet with the correct checksum
-        return self.pack_packet(
-            packet_type, seq_num, checksum, payload_length, payload_encoded
-        )
+        packet_type = 0x1
+        checksum = 0
+        # Packet format before checksum: packet_type, seq_num, checksum (placeholder)
+        pkt_without_checksum = pack("!HIH", packet_type, seq_num, checksum)
+        checksum = self.create_checksum(pkt_without_checksum)
+        return pack("!HIH", packet_type, seq_num, checksum)
 
     # This function should accept a bytes object and return a checksum for the bytes object.
     def create_checksum(self, packet):
@@ -261,21 +253,20 @@ class GBNHost:
         Returns:
             int: the checksum value
         """
-        # Ensure packet length is even by appending a 0-byte if necessary
-        if len(packet) % 2 == 1:
-            packet += bytes(1)
-
+        # Summation of all 16-bit words in the packet
         sum = 0
-        # Iterate through the packet two bytes at a time
         for i in range(0, len(packet), 2):
-            # Combine two adjacent bytes into a 16-bit word
-            word = packet[i] << 8 | packet[i + 1]
-            # Add the word to the sum
-            sum += word
-            # Handle overflow by carrying the overflow bit
+            if i + 1 < len(packet):
+                word = (packet[i] << 8) + packet[i + 1]
+            else:
+                word = packet[i] << 8
+            sum = sum + word
+
+        # Add carry to the sum if any
+        while (sum >> 16) > 0:
             sum = (sum & 0xFFFF) + (sum >> 16)
 
-        # Perform 1's complement of the final sum
+        # One's complement of the sum
         checksum = ~sum & 0xFFFF
         return checksum
 
@@ -304,9 +295,6 @@ class GBNHost:
             dictionary: a dictionary containing the different values stored in the packet
         """
         try:
-            # The packet layout is HIHI{payload_length}s. For ACK packets its only HIH.
-            # H is for unsigned short (2 bytes), I is for unsigned int (4 bytes), and s is for string (variable bytes)
-
             # Check minimum length for type and sequence number and checksum
             if len(packet) < 6:
                 print("Packet is too short for type, sequence number, and checksum")
@@ -408,21 +396,3 @@ class GBNHost:
 
         print(f"Packet is corrupt: {is_corrupt}")
         return is_corrupt
-
-    def get_packet_type(self, packet):
-        """Determine if a packet is an ACK or a data packet.
-
-        Args:
-            packet (bytes): The packet to determine the type of.
-        Returns:
-            str: 'ACK' if the packet is an acknowledgment packet, 'DATA' if it is a data packet.
-        """
-        try:
-            packet_type, _, _ = unpack("!HIH", packet[:8])
-            if packet_type == 0x1:
-                return "ACK"
-            else:
-                return "DATA"
-        except error:
-            print("Error determining packet type.")
-            return None
